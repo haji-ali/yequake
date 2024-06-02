@@ -121,6 +121,10 @@ node `(elisp)Position Parameters'.
 a floating point ratio of the workspace height.  See Info
 node `(elisp)Position Parameters'.
 
+`persistent': A boolean, when non-nil will cause the frame data
+to be saved when the frame is deleted and recovered on next
+invocation.
+
 `frame-parameters': Alist of parameters passed to `make-frame',
 e.g. `alpha' to set the frame opacity.
 
@@ -144,6 +148,7 @@ See Info node `(elisp)Frame Parameters'."
             (cons :tag "Height" (const height) number)
             (cons :tag "Left" (const left) number)
             (cons :tag "Top" (const top) number)
+            (cons :tag "Persistent" (const persistent) boolean)
             (cons :tag "Buffer Functions" (const buffer-fns)
                   (repeat (choice (string :tag "Buffer or file name")
                                   (function :tag "Function that returns a buffer or splits the window"))))
@@ -163,6 +168,9 @@ See Info node `(elisp)Frame Parameters'."
 
 (defvar yequake-recent-frame-name nil
   "Name of most recently toggled frame.")
+
+(defvar yequake--frame-data nil
+  "An alist of frame data for each frame type.")
 
 ;;;; Commands
 
@@ -187,12 +195,23 @@ See Info node `(elisp)Frame Parameters'."
   (if-let* ((visible-frame (alist-get name (make-frame-names-alist) nil nil #'string=)))
       (if (and yequake-focused (equal visible-frame (selected-frame)))
           ;; Frame is visible and focused: delete it.
-          (delete-frame visible-frame)
+          (progn
+            (when (alist-get 'persistent frame)
+              (setf (alist-get name yequake--frame-data nil nil #'equal)
+                    ;; Taken from `undelete-frame--save-deleted-frame'
+                    (list
+                     (seq-remove
+                      (lambda (elem)
+                        (or (memq (car elem) '(parent-id window-id))
+                            (and (eq (car elem) 'display) (not (display-graphic-p)))))
+                      (frame-parameters visible-frame))
+                     (window-state-get (frame-root-window visible-frame)))))
+            (delete-frame visible-frame))
         ;; Frame is visible but not focused: raise and focus it.
         (select-frame-set-input-focus visible-frame)
         (setq yequake-focused t))
     ;; Frame doesn't exist: make it.
-    (-let* (((&alist '_x '_y 'width 'height 'left 'top 'buffer-fns 'alpha 'frame-parameters) frame)
+    (-let* (((&alist '_x '_y 'width 'height 'left 'top 'persistent 'buffer-fns 'alpha 'frame-parameters) frame)
             ((monitor-x monitor-y monitor-width monitor-height) (mapcar #'floor (alist-get 'geometry (frame-monitor-attributes))))
             (frame-width (cl-typecase width
                            (integer width)
@@ -204,14 +223,19 @@ See Info node `(elisp)Frame Parameters'."
                          (+ monitor-x (floor (/ (- monitor-width frame-width)
                                                 2)))))
             (frame-y (or top monitor-y))
-            (new-frame (make-frame (append frame-parameters
-                                           (list (cons 'name name)
-                                                 (cons 'alpha alpha)
-                                                 (cons 'left frame-x)
-                                                 (cons 'top frame-y)
-                                                 (cons 'width (cons 'text-pixels frame-width))
-                                                 (cons 'height (cons 'text-pixels frame-height))
-                                                 (cons 'user-position t))))))
+            (frame-data (and persistent
+                             (alist-get name yequake--frame-data nil nil #'equal)))
+            (new-frame (make-frame (or (and frame-data (nth 0 frame-data))
+                                       (append frame-parameters
+                                               (list (cons 'name name)
+                                                     (cons 'alpha alpha)
+                                                     (cons 'left frame-x)
+                                                     (cons 'top frame-y)
+                                                     (cons 'width (cons 'text-pixels frame-width))
+                                                     (cons 'height (cons 'text-pixels frame-height))
+                                                     (cons 'user-position t)))))))
+      (when frame-data
+        (window-state-put (nth 1 frame-data) (frame-root-window new-frame) 'safe))
       (select-frame new-frame)
       (select-frame-set-input-focus new-frame)
       (delete-other-windows)
